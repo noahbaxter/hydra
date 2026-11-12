@@ -52,7 +52,8 @@ class ScoreGraph:
         self._proto_base_edge = ScoreGraphEdge()
         self._proto_sp_edge = ScoreGraphEdge()
         
-        for timestamp in song._sequence:
+        half_windows = [w / 2 for w in hymisc.drum_hit_windows_ms([ts.timecode.ms for ts in song._sequence])]
+        for timestamp, half_window in zip(song._sequence, half_windows):
             # SP can fall off between timestamps, so handle those first if any.
             for pending_deact in sorted(list(self._pending_deacts)):
                 if pending_deact >= timestamp.timecode:
@@ -82,7 +83,7 @@ class ScoreGraph:
             
             self._combo += timestamp.chord.count()
             
-            self.store_new_backend(timestamp, score_groups['sp'], score_groups['sp'] - score_groups['sqout_reduction'])
+            self.store_new_backend(timestamp, half_window, score_groups['sp'], score_groups['sp'] - score_groups['sqout_reduction'])
             
             if timestamp.flag_sp:
                 # If any deacts are only the squeeze window away (140ms), keep a non-extended copy of them (SqOut)
@@ -98,8 +99,8 @@ class ScoreGraph:
                 self._pending_deacts = set(extension_map.values()).union(sqout_deacts)
                 
                 # Save info on the graph
-                self._proto_base_edge.sp_times.append((timestamp.timecode, extension_map))
-                self._proto_sp_edge.sp_times.append((timestamp.timecode, extension_map))
+                self._proto_base_edge.sp_times.append((timestamp.timecode, extension_map, half_window))
+                self._proto_sp_edge.sp_times.append((timestamp.timecode, extension_map, half_window))
                 
             # handle acts            
             if timestamp.has_activation():
@@ -153,14 +154,14 @@ class ScoreGraph:
         self._proto_base_edge.multsqueezes.append(msq)
         self._proto_sp_edge.multsqueezes.append(msq)
     
-    def store_new_backend(self, timestamp, sp_points, sqout_points):
+    def store_new_backend(self, timestamp, half_window, sp_points, sqout_points):
         """Create a backend and apply it to recent deact edges.
         These backends are late, i.e. they have positive offsets.
         """
         backend = hydata.BackendSqueeze(
             timestamp.timecode, timestamp.chord,
             sp_points, sqout_points,
-            timestamp.flag_sp
+            timestamp.flag_sp, half_window
         )
         
         self._recent_backends.append(backend)
@@ -553,6 +554,7 @@ class GraphPath:
             self.buffered_sqinout_sp = parent_path.buffered_sqinout_sp
             self.sp_end_time = parent_path.sp_end_time
             self.sp_ready_time = parent_path.sp_ready_time
+            self.sp_ready_slack = parent_path.sp_ready_slack
             self.skipped_e_offset = parent_path.skipped_e_offset
         else:
             self.data = hydata.Path()
@@ -563,6 +565,7 @@ class GraphPath:
             self.buffered_sqinout_sp = 0 # sp that was handled during a recent sqin/sqout, and needs to not be double counted
             self.sp_end_time = None
             self.sp_ready_time = None
+            self.sp_ready_slack = None # half hit window of the note that made sp ready
             self.skipped_e_offset = None
             
     
@@ -596,7 +599,7 @@ class GraphPath:
                 # To do: Find a way to store the plusmeasures on the graph
                 # The sp_times can be a tuple with the sp time and the sp time + 8 measures
                 # The sp extension is actually the same as the pending_deact extensions in ScoreGraph so let's use those
-                for sptc, extension_map in adv_edge.sp_times:
+                for sptc, extension_map, _ in adv_edge.sp_times:
                     if self.buffered_sqinout_sp > 0:
                         self.buffered_sqinout_sp -= 1
                     else:
@@ -608,7 +611,7 @@ class GraphPath:
                 self.sp = min(self.sp + len(adv_edge.sp_times) - self.buffered_sqinout_sp, 4)
 
                 if old_sp < 2 and self.sp >= 2:
-                    self.sp_ready_time = adv_edge.sp_times[1 - old_sp + self.buffered_sqinout_sp][0]
+                    self.sp_ready_time, _, self.sp_ready_slack = adv_edge.sp_times[1 - old_sp + self.buffered_sqinout_sp]
                     
                 self.buffered_sqinout_sp = 0
  
@@ -637,8 +640,8 @@ class GraphPath:
         # sp ready time must be before this activation fill's deadline
         e_offset = br_edge.activation_fill_deadline_ms - self.sp_ready_time.ms
         
-        # Thanks to the timing window, the cutoff is -70ms not 0ms
-        if e_offset < -70:
+        # The note that made sp ready can be hit early by up to half its hit window
+        if e_offset < -self.sp_ready_slack:
             return None
                     
         new_path = GraphPath(parent_path=self)
@@ -655,6 +658,7 @@ class GraphPath:
         new_act.sp_meter = self.sp
         new_act.frontend_points = br_edge.frontend.points
         new_act.e_offset = self.skipped_e_offset if self.skipped_e_offset is not None else e_offset
+        new_act.e_slack = self.sp_ready_slack
         new_act._left_frontend_ldo_factor = br_edge.left_bpm / br_edge.left_tpm
         new_act._right_frontend_ldo_factor = br_edge.right_bpm / br_edge.right_tpm
         

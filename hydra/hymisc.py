@@ -18,6 +18,34 @@ HYDRA_VERSION = (1,3,1)
 ENGINE_LABEL = "Clone Hero v1.1.0.6142"
 
 
+"""Clone Hero drum hit window"""
+# Each side of a chord's window is half the gap to its neighbor, clamped to this range
+DRUM_WINDOW_SIDE_MIN_MS = 37.5
+DRUM_WINDOW_SIDE_MAX_MS = 85.0
+# Both sides summed (x) map to the full window as (A*x^2 + B*x) * SCALE + OFFSET
+DRUM_WINDOW_CURVE_A = -2.628539e-05
+DRUM_WINDOW_CURVE_B = 0.0110924369747899
+DRUM_WINDOW_CURVE_SCALE = 170.0
+DRUM_WINDOW_CURVE_OFFSET = -20.0
+# Hydra's old fixed half window, for data saved without one
+DEFAULT_HALF_WINDOW_MS = 70.0
+
+
+def drum_hit_windows_ms(times_ms):
+    """Clone Hero's dynamic drum hit window (full width, ms) for each chord,
+    from about 96 to 171 ms. A side with no neighbor gets the max.
+
+    """
+    def side(gap):
+        return min(max(gap / 2, DRUM_WINDOW_SIDE_MIN_MS), DRUM_WINDOW_SIDE_MAX_MS)
+
+    windows = []
+    for i, t in enumerate(times_ms):
+        x = (side(t - times_ms[i - 1]) if i > 0 else DRUM_WINDOW_SIDE_MAX_MS) + (side(times_ms[i + 1] - t) if i + 1 < len(times_ms) else DRUM_WINDOW_SIDE_MAX_MS)
+        windows.append((DRUM_WINDOW_CURVE_A * x * x + DRUM_WINDOW_CURVE_B * x) * DRUM_WINDOW_CURVE_SCALE + DRUM_WINDOW_CURVE_OFFSET)
+    return windows
+
+
 """Feature flags"""
 FLAG_SKIPPED_DYNAMICS = True
 

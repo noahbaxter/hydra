@@ -69,6 +69,7 @@ def json_save(obj):
             'sqinouts': obj.sqinouts,
             
             'e_offset': obj.e_offset,
+            'e_slack': obj.e_slack,
         }
     
     if isinstance(obj, FrontendSqueeze):
@@ -103,6 +104,7 @@ def json_save(obj):
             'sqout_points': obj.sqout_points,
             'is_sp': obj.is_sp,
             'offset_ms': obj.offset_ms,
+            'half_window_ms': obj.half_window_ms,
     }
     
     raise TypeError(f"Unhandled type: {type(obj)}")
@@ -185,6 +187,7 @@ def json_load(_dict):
             o.sqinouts = _dict['sqinouts']
             
             o.e_offset = _dict['e_offset']
+            o.e_slack = _dict.get('e_slack', hymisc.DEFAULT_HALF_WINDOW_MS)
         
             return o
         
@@ -210,6 +213,7 @@ def json_load(_dict):
                 _dict['points'],
                 _dict['sqout_points'],
                 _dict['is_sp'],
+                _dict.get('half_window_ms', hymisc.DEFAULT_HALF_WINDOW_MS),
             )
             o.offset_ms = _dict['offset_ms']
             
@@ -445,6 +449,8 @@ class Activation:
         self.sqinouts = []
         
         self.e_offset = None
+        # Half hit window (ms) of the note that made SP ready
+        self.e_slack = hymisc.DEFAULT_HALF_WINDOW_MS
     
     def __eq__(self, other):
         for listattr in ['backends', 'sqinouts']:
@@ -481,7 +487,7 @@ class Activation:
         return f"{self.notationstr()} ({'/'.join(timings)})"
         
     def is_e_critical(self):
-        return self.e_offset < 70
+        return self.e_offset < self.e_slack
         
     def is_E0(self):
         return self.is_e_critical() and self.skips == 0
@@ -504,6 +510,7 @@ class Activation:
         c.sqinouts = [s for s in self.sqinouts]
         
         c.e_offset = self.e_offset
+        c.e_slack = self.e_slack
         
         return c
 
@@ -724,12 +731,14 @@ class SqOut(SPSqueeze):
     
 
 class BackendSqueeze:
-    def __init__(self, timecode, chord, points, sqout_points, is_sp):
+    def __init__(self, timecode, chord, points, sqout_points, is_sp, half_window_ms):
         self.timecode = timecode
         self.chord = chord
         self.points = points
         self.sqout_points = sqout_points
         self.is_sp = is_sp
+        # Half of this chord's hit window: how far early/late it can be hit
+        self.half_window_ms = half_window_ms
 
         self.offset_ms = None
         
@@ -744,42 +753,44 @@ class BackendSqueeze:
         return f"{self.chord.rowstr()} {self.offset_ms}"
     
     def summarystr(self):
+        h = self.half_window_ms
         if self.is_sp:
-            if self.offset_ms < -70:
+            if self.offset_ms < -h:
                 return "Insane SqOut"
             elif self.offset_ms < -10:
                 return "Hard SqOut"
             elif self.offset_ms < 3:
                 return "Standard SqOut"
-            elif self.offset_ms < 70:
+            elif self.offset_ms < h:
                 return "Easy SqOut (uncounted)"
             else:
                 return "Free SqOut (uncounted)"
         else:
-            if self.offset_ms < -70:
+            if self.offset_ms < -h:
                 return "Free"
             elif self.offset_ms < -10:
                 return "Easy"
             elif self.offset_ms < 3:
                 return "Standard"
-            elif self.offset_ms < 70:
+            elif self.offset_ms < h:
                 return "Hard (uncounted)"
             else:
                 return "Insane (uncounted)"
     
     def ratingstr(self):
         """Hydra ratings for how hard the squeeze's timing is."""
+        h = self.half_window_ms
         thresholds = [
-            (-140, "Free"),
-            (-105, "Free"),
-            (-70, "Free"),
-            (-35, "Trivial"),
+            (-2 * h, "Free"),
+            (-1.5 * h, "Free"),
+            (-h, "Free"),
+            (-h / 2, "Trivial"),
             (-2, "Easy"),
             (2, "Normal"),
-            (35, "Hard"),
-            (70, "Extreme"),
-            (105, "Insane"),
-            (140, "Insane+"),
+            (h / 2, "Hard"),
+            (h, "Extreme"),
+            (1.5 * h, "Insane"),
+            (2 * h, "Insane+"),
         ]
         max_rating = "Impossible"
         
