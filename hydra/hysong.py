@@ -97,10 +97,11 @@ class Song:
     def check_activations(self):
         """ If a chart has no drum fills, add them in like Clone Hero would.
         
-        Rule: Try to put activations on downbeats. A note needs to be within
-        1/2 beat of the downbeat. Choose the closest note and if there's a tie
-        use the later note. Activations are 1/2 measure long.
-        Whenever an activation is placed, ignore the next 3 measures.
+        Rule: Try to put activations on downbeats, skipping the first one. A
+        note needs to be within 1/2 beat (+1 tick) of the downbeat. Choose the
+        closest note and if there's a tie use the later note. The fill starts
+        on the downbeat. Whenever an activation is placed, ignore the next 3
+        measures.
         """
         if all(not ts.has_activation() for ts in self._sequence):
             self.features['Auto-Generated Fills'] = True
@@ -132,14 +133,18 @@ class Song:
                         measuremap[measure] = (tick, timestamp, dist, pre_tpm)
 
             ACT_COOLDOWN_MEASURES = 4
-            MAX_DISTANCE = self.tick_resolution // 2
+            MAX_DISTANCE = self.tick_resolution // 2 + 1
             last_act_measure = None
             for measure in measuremap.keys():
+                # The first measure line (tick 0) is never used
+                if measure == 1:
+                    continue
                 if last_act_measure is not None and measure < last_act_measure + ACT_COOLDOWN_MEASURES:
                     continue
-                _, ts, bestdist, pre_tpm = measuremap[measure]
+                tick, ts, bestdist, _ = measuremap[measure]
                 if ts is not None and bestdist <= MAX_DISTANCE:
-                    ts.activation_length = pre_tpm // 2
+                    # The fill starts on the measure line
+                    ts.activation_length = ts.timecode.ticks - tick
                     last_act_measure = measure
 
     def start_time(self):
