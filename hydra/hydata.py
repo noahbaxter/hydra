@@ -1102,16 +1102,17 @@ class Chord:
         self[color].dynamictype = NoteDynamicType.ACCENT
 
     def activation_note(self):
-        for c in [
+        notes = [n for c in [
             NoteColor.GREEN,
             NoteColor.BLUE,
             NoteColor.YELLOW,
             NoteColor.RED,
             NoteColor.KICK,
-        ]:
-            if (note := self[c]) is not None:
-                return note
-        raise ValueError
+        ] if (n := self[c]) is not None]
+        if not notes:
+            raise ValueError
+        # Clone Hero picks the chord's highest lane bit, where cymbals rank above toms
+        return next((n for n in notes if n.is_cymbal()), notes[0])
     
     @staticmethod
     def all_chords():
