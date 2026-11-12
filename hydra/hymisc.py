@@ -19,7 +19,7 @@ ENGINE_LABEL = "Clone Hero v1.1.0.6142"
 
 
 """Feature flags"""
-FLAG_SKIPPED_DYNAMICS = False
+FLAG_SKIPPED_DYNAMICS = True
 
 
 """Static paths and files"""
