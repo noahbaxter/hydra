@@ -36,7 +36,11 @@ class ScoreGraph:
     def __init__(self, song, upperbound=None):
         # Finished state
         self.song = song
-        self.upperbound = upperbound if upperbound else 140
+        half_windows = [w / 2 for w in hymisc.drum_hit_windows_ms([ts.timecode.ms for ts in song._sequence])]
+        # Without a custom bound, a squeeze is possible when the note's offset from the SP end
+        # fits in the note's half window plus the activation note's half window
+        self.exact_squeezes = not upperbound
+        self.upperbound = upperbound if upperbound else 2 * max(half_windows, default=hymisc.DEFAULT_HALF_WINDOW_MS)
         self.start = ScoreGraphNode(song.start_time(), False)
         self.length = 0
         self.songfeatures = song.features
@@ -52,7 +56,6 @@ class ScoreGraph:
         self._proto_base_edge = ScoreGraphEdge()
         self._proto_sp_edge = ScoreGraphEdge()
         
-        half_windows = [w / 2 for w in hymisc.drum_hit_windows_ms([ts.timecode.ms for ts in song._sequence])]
         for timestamp, half_window in zip(song._sequence, half_windows):
             # SP can fall off between timestamps, so handle those first if any.
             for pending_deact in sorted(list(self._pending_deacts)):
@@ -86,7 +89,7 @@ class ScoreGraph:
             self.store_new_backend(timestamp, half_window, score_groups['sp'], score_groups['sp'] - score_groups['sqout_reduction'])
             
             if timestamp.flag_sp:
-                # If any deacts are only the squeeze window away (140ms), keep a non-extended copy of them (SqOut)
+                # If any deacts are only the squeeze window away (upperbound), keep a non-extended copy of them (SqOut)
                 sqout_deacts = set([tc for tc in self._pending_deacts if tc.ms - timestamp.timecode.ms < self.upperbound])
                 
                 # Deact timecodes that can be extended by this sp: current pending deacts as well as very recently handled deacts (SqIn)
@@ -105,7 +108,7 @@ class ScoreGraph:
             # handle acts            
             if timestamp.has_activation():
                 self.advance_tracks(timestamp.timecode, timestamp.chord)
-                self.add_act_edge(timestamp.chord, score_groups['sp'], score_groups['skipped_dynamic_reduction'], timestamp.activation_length, song)
+                self.add_act_edge(timestamp.chord, score_groups['sp'], score_groups['skipped_dynamic_reduction'], timestamp.activation_length, half_window, song)
                 
                 self._pending_deacts.add(timestamp.timecode.plusmeasure(4, song))
                 self._pending_deacts.add(timestamp.timecode.plusmeasure(6, song))
@@ -176,6 +179,7 @@ class ScoreGraph:
                 # If there are more than 1, it's probably a charting error, but ya know
                 recent_edge.sqinout_time = timestamp.timecode
                 recent_edge.sqinout_timing = offset_ms
+                recent_edge.sqinout_half_window = half_window
                 recent_edge.late_sqin_count += 1
                 recent_edge.sqin_time = recent_edge.sqin_time.plusmeasure(2, self.song)
         
@@ -218,7 +222,7 @@ class ScoreGraph:
         self._base_track_head = self._base_track_head.adv_edge.dest
         self._sp_track_head = self._sp_track_head.adv_edge.dest
     
-    def add_act_edge(self, frontend_chord, frontend_points, skipped_dynamic_reduction, fill_length_ticks, song):
+    def add_act_edge(self, frontend_chord, frontend_points, skipped_dynamic_reduction, fill_length_ticks, half_window, song):
         act_edge = ScoreGraphEdge()
         act_edge.dest = self._sp_track_head
         
@@ -239,6 +243,10 @@ class ScoreGraph:
         act_edge.activation_initial_end_times = {sp: act_edge.dest.timecode.plusmeasure(2 * sp, song) for sp in [2, 3, 4]}
         
         act_edge.skipped_dynamic_points = skipped_dynamic_reduction
+        
+        # Hitting the activation note early/late moves the SP end by up to this much.
+        # A custom upperbound is a flat limit instead, so this never rejects a squeeze.
+        act_edge.activation_half_window = half_window if self.exact_squeezes else math.inf
         
         act_edge.left_tpm, act_edge.left_bpm, act_edge.right_tpm, act_edge.right_bpm = self.song.tpm_bpm_at(act_edge.dest.timecode)
     
@@ -268,6 +276,7 @@ class ScoreGraph:
             if recent_backend.is_sp and not deact_edge.sqinout_time:
                 deact_edge.sqinout_time = recent_backend.timecode
                 deact_edge.sqinout_timing = offset_ms
+                deact_edge.sqinout_half_window = recent_backend.half_window_ms
                 deact_edge.sqout_time = deact_edge.sqout_time.plusmeasure(2, self.song)
                 deact_edge.sqin_time = deact_edge.sqin_time.plusmeasure(2, self.song)
         
@@ -343,6 +352,7 @@ class ScoreGraphEdge:
         
         self.sqinout_time = None
         self.sqinout_timing = None
+        self.sqinout_half_window = None
         
         self.late_sqin_count = 0
         self.sqout_time = None
@@ -555,6 +565,7 @@ class GraphPath:
             self.sp_end_time = parent_path.sp_end_time
             self.sp_ready_time = parent_path.sp_ready_time
             self.sp_ready_slack = parent_path.sp_ready_slack
+            self.act_half_window = parent_path.act_half_window
             self.skipped_e_offset = parent_path.skipped_e_offset
         else:
             self.data = hydata.Path()
@@ -566,6 +577,7 @@ class GraphPath:
             self.sp_end_time = None
             self.sp_ready_time = None
             self.sp_ready_slack = None # half hit window of the note that made sp ready
+            self.act_half_window = None # half hit window of the current activation note
             self.skipped_e_offset = None
             
     
@@ -650,6 +662,7 @@ class GraphPath:
         
         # Activated paths immediately "spend" the sp and just know what time the sp ends.
         new_path.sp = 0
+        new_path.act_half_window = br_edge.activation_half_window
         
         new_act = hydata.Activation()
         new_act.skips = self.currentskips
@@ -755,6 +768,13 @@ class GraphPath:
                 normal_deact = self.create_deactivated_path(False)
                 return False, normal_deact
             case 'sqinout':
+                if abs(br_edge.sqinout_timing) > self.act_half_window + br_edge.sqinout_half_window:
+                    if br_edge.sqinout_timing < 0:
+                        # Too early to SqOut: SP takes the note
+                        self.sp_end_time = br_edge.sqin_time
+                        return True, None
+                    # Too late to SqIn: SP ends before the note
+                    return False, self.create_deactivated_path(False)
                 sqout_deact = self.create_deactivated_path(True)
                 self.data._activations[-1].sqinouts.append(hydata.SqIn(br_edge.sqinout_timing))
                 self.sp_end_time = br_edge.sqin_time
