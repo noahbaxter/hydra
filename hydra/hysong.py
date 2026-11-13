@@ -484,7 +484,7 @@ class MidiParser:
                 prevchord_dist = None
             nextchord_dist = tick - self._fill_end_tick
             
-            if (nextchord_dist <= self.song.tick_resolution // 32
+            if (nextchord_dist <= self.song.tick_resolution // 32 + 1
                 and (prevchord_dist is None or nextchord_dist <= prevchord_dist)
             ):
                 # Let the activation apply to this chord if it's at most
@@ -909,7 +909,7 @@ class ChartParser:
                 prevchord_dist = None
             
             nextchord_dist = tick - self._fill_end_tick
-            if (nextchord_dist <= self.song.tick_resolution // 32
+            if (nextchord_dist <= self.song.tick_resolution // 32 + 1
                 and (prevchord_dist is None or nextchord_dist <= prevchord_dist)
             ):
                 # Let the activation apply to this chord if it's at most
